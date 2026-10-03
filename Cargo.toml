@@ -5,8 +5,28 @@ edition = "2021"
 description = "Lightweight on-demand Docker engine manager for Windows (WSL2)"
 license = "MIT"
 
+[lib]
+name = "lightdock"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lightdock"
+path = "src/main.rs"
+
+[[bin]]
+name = "lightdock-tray"
+path = "src/bin/lightdock-tray.rs"
+required-features = ["tray"]
+
+[features]
+default = ["tray"]
+tray = ["dep:tray-icon", "dep:tao"]
+
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "process", "time", "macros", "sync", "signal"] }
+getrandom = "0.2"
+tray-icon = { version = "0.19", optional = true }
+tao = { version = "0.30", optional = true }
 
 [profile.release]
 opt-level = "z"

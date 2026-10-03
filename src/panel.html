@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LightDock</title>
+<style>
+  :root { color-scheme: light dark; --bg:#fff; --fg:#1d1f23; --mute:#6b7280; --line:#e5e7eb; --card:#f7f8fa; --ok:#16a34a; --off:#9ca3af; --bad:#dc2626; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#14161a; --fg:#e6e8eb; --mute:#9aa1ab; --line:#2a2e35; --card:#1b1e23; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.45 system-ui,Segoe UI,sans-serif; background:var(--bg); color:var(--fg); }
+  main { max-width:960px; margin:0 auto; padding:20px 16px 60px; }
+  header { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
+  h1 { font-size:20px; margin:0; }
+  h2 { font-size:15px; margin:28px 0 8px; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--off); display:inline-block; }
+  .dot.on { background:var(--ok); }
+  .spacer { flex:1; }
+  .meta { color:var(--mute); font-size:13px; }
+  button { font:inherit; padding:5px 10px; border:1px solid var(--line); background:var(--card); color:var(--fg); border-radius:6px; cursor:pointer; }
+  button:hover { border-color:var(--mute); }
+  button.danger:hover { border-color:var(--bad); color:var(--bad); }
+  button:disabled { opacity:.5; cursor:default; }
+  table { width:100%; border-collapse:collapse; }
+  th,td { text-align:left; padding:8px 6px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { color:var(--mute); font-weight:500; font-size:12px; }
+  td.actions { white-space:nowrap; text-align:right; }
+  td.actions button { margin-left:4px; }
+  .state-running { color:var(--ok); } .state-exited,.state-created { color:var(--mute); } .state-dead { color:var(--bad); }
+  .empty { color:var(--mute); padding:14px 6px; }
+  #err { color:var(--bad); margin-bottom:10px; min-height:1em; }
+  dialog { width:min(900px,92vw); border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); padding:12px; }
+  dialog::backdrop { background:rgba(0,0,0,.4); }
+  pre { max-height:60vh; overflow:auto; background:var(--card); padding:10px; border-radius:6px; margin:8px 0; white-space:pre-wrap; word-break:break-all; font-size:12px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>LightDock</h1>
+    <span><span class="dot" id="dot"></span> <span id="stateText">…</span></span>
+    <span class="meta" id="meta"></span>
+    <span class="spacer"></span>
+    <button id="engineBtn" disabled>…</button>
+  </header>
+  <div id="err"></div>
+
+  <h2>Containers</h2>
+  <div id="containers"></div>
+
+  <h2>Images</h2>
+  <div id="images"></div>
+</main>
+
+<dialog id="logDlg">
+  <strong id="logTitle"></strong>
+  <pre id="logBody"></pre>
+  <button onclick="logDlg.close()">Close</button>
+</dialog>
+
+<script>
+const $ = id => document.getElementById(id);
+let token = new URLSearchParams(location.search).get('t');
+try {
+  if (token) sessionStorage.setItem('t', token); else token = sessionStorage.getItem('t');
+} catch (e) {}
+history.replaceState(null, '', '/');
+
+let state = { running: false };
+
+async function api(path, method = 'GET') {
+  const r = await fetch('/api/' + path, { method, headers: { 'X-Token': token || '' } });
+  const type = r.headers.get('content-type') || '';
+  const data = type.includes('json') ? await r.json().catch(() => ({})) : await r.text();
+  if (!r.ok) throw new Error((data && data.error) || (data && data.message) || ('HTTP ' + r.status));
+  return data;
+}
+
+function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+function showErr(e) { $('err').textContent = e ? (e.message || e) : ''; }
+function fmtTime(s) { return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's'; }
+
+function renderState() {
+  $('dot').className = 'dot' + (state.running ? ' on' : '');
+  $('stateText').textContent = state.running ? 'Engine running' : 'Engine stopped (starts on first docker command)';
+  $('meta').textContent = state.running
+    ? state.clients + ' client(s) · idle ' + fmtTime(state.idle_seconds) + ' / auto-stop ' + fmtTime(state.idle_timeout)
+    : 'WSL distro: ' + (state.distro || '?');
+  $('engineBtn').textContent = state.running ? 'Stop engine' : 'Start engine';
+  $('engineBtn').disabled = false;
+}
+
+function ports(c) {
+  return (c.Ports || []).filter(p => p.PublicPort).map(p => p.PublicPort + '→' + p.PrivatePort).join(', ');
+}
+
+function renderContainers(list) {
+  if (!list.length) { $('containers').innerHTML = '<div class="empty">No containers.</div>'; return; }
+  const rows = list.map(c => {
+    const name = (c.Names && c.Names[0] || c.Id.slice(0, 12)).replace(/^\//, '');
+    const running = c.State === 'running';
+    return '<tr><td><strong>' + esc(name) + '</strong><div class="meta">' + esc(c.Image) + '</div></td>' +
+      '<td class="state-' + esc(c.State) + '">' + esc(c.Status) + '</td>' +
+      '<td>' + esc(ports(c)) + '</td>' +
+      '<td class="actions">' +
+      (running
+        ? '<button data-a="stop" data-id="' + esc(c.Id) + '">Stop</button><button data-a="restart" data-id="' + esc(c.Id) + '">Restart</button>'
+        : '<button data-a="start" data-id="' + esc(c.Id) + '">Start</button>') +
+      '<button data-a="logs" data-id="' + esc(c.Id) + '" data-name="' + esc(name) + '">Logs</button>' +
+      '<button class="danger" data-a="rm" data-id="' + esc(c.Id) + '">Remove</button></td></tr>';
+  }).join('');
+  $('containers').innerHTML = '<table><tr><th>Name</th><th>Status</th><th>Ports</th><th></th></tr>' + rows + '</table>';
+}
+
+function renderImages(list) {
+  if (!list.length) { $('images').innerHTML = '<div class="empty">No images.</div>'; return; }
+  const rows = list.map(i => {
+    const tag = (i.RepoTags && i.RepoTags[0]) || '<none>';
+    return '<tr><td>' + esc(tag) + '</td><td>' + (i.Size / 1048576).toFixed(0) + ' MB</td>' +
+      '<td class="actions"><button class="danger" data-a="rmi" data-id="' + esc(i.Id) + '">Remove</button></td></tr>';
+  }).join('');
+  $('images').innerHTML = '<table><tr><th>Image</th><th>Size</th><th></th></tr>' + rows + '</table>';
+}
+
+async function refresh() {
+  try {
+    state = await api('state');
+    renderState();
+    if (state.running) {
+      const [c, i] = await Promise.all([api('containers'), api('images')]);
+      renderContainers(c); renderImages(i);
+    } else {
+      $('containers').innerHTML = '<div class="empty">Engine is stopped.</div>';
+      $('images').innerHTML = '<div class="empty">Engine is stopped.</div>';
+    }
+    showErr('');
+  } catch (e) { showErr(e); }
+}
+
+document.addEventListener('click', async ev => {
+  const b = ev.target.closest('button[data-a]');
+  if (!b) return;
+  const { a, id, name } = b.dataset;
+  try {
+    b.disabled = true;
+    if (a === 'logs') {
+      $('logTitle').textContent = name;
+      $('logBody').textContent = await api('containers/' + id + '/logs');
+      logDlg.showModal();
+    } else if (a === 'rm') {
+      if (confirm('Remove container (force)?')) await api('containers/' + id, 'DELETE');
+    } else if (a === 'rmi') {
+      if (confirm('Remove image?')) await api('images/' + id, 'DELETE');
+    } else {
+      await api('containers/' + id + '/' + a, 'POST');
+    }
+  } catch (e) { showErr(e); }
+  refresh();
+});
+
+$('engineBtn').onclick = async () => {
+  $('engineBtn').disabled = true;
+  try { await api('engine/' + (state.running ? 'stop' : 'start'), 'POST'); } catch (e) { showErr(e); }
+  refresh();
+};
+
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
