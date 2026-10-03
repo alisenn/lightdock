@@ -21,3 +21,7 @@ Env: `LIGHTDOCK_DISTRO` (default `Ubuntu`), `LIGHTDOCK_IDLE_MINUTES` (default `5
 ## Status
 
 MVP core, not yet compiled/tested. TODO: tray icon, panel, named pipe support.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Licensed under the [MIT License](LICENSE).
